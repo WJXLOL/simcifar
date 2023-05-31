@@ -2,7 +2,7 @@ import argparse
 import time
 import math
 from os import path, makedirs
-
+import os
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
@@ -11,12 +11,22 @@ from torch.backends import cudnn
 from torchvision import datasets
 from torchvision import transforms
 
+from imbalance_data import cifar10Imbanlance, cifar100Imbanlance, dataset_lt_data
+
 from simsiam.loader import TwoCropsTransform
 from simsiam.model_factory import SimSiam
 from simsiam.criterion import SimSiamLoss
 from simsiam.validation import KNNValidation
+from utils import util
+from utils.util import *
 
 parser = argparse.ArgumentParser('arguments for training')
+
+parser.add_argument('--dataset', type=str, default='cifar100', help="cifar10,cifar100,ImageNet-LT,iNaturelist2018")
+parser.add_argument('--num_classes', default=100, type=int, help='number of classes ')
+parser.add_argument('--imbanlance_rate', default=0.01, type=float, help='imbalance factor')
+parser.add_argument('--beta', type=float, default=0.5, help="augment mixture")
+
 parser.add_argument('--data_root', type=str, help='path to dataset directory')
 parser.add_argument('--exp_dir', type=str, help='path to experiment directory')
 parser.add_argument('--trial', type=str, default='1', help='trial id')
@@ -64,17 +74,31 @@ def main():
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
     ])
 
-    train_set = datasets.CIFAR10(root=args.data_root,
-                                 train=True,
-                                 download=True,
-                                 transform=TwoCropsTransform(train_transforms))
+    transform_train, transform_val = util.get_transform(args.dataset)
+    if args.dataset == 'cifar10':
+        train_set = cifar10Imbanlance.Cifar10Imbanlance(transform=TwoCropsTransform(train_transforms),
+                                                        imbanlance_rate=args.imbanlance_rate, train=True,
+                                                        file_path=args.data_root)
+        test_set = cifar10Imbanlance.Cifar10Imbanlance(imbanlance_rate=args.imbanlance_rate, train=False,
+                                                       transform=transform_val, file_path=args.root)
+        print("load cifar10")
 
-    train_loader = DataLoader(dataset=train_set,
-                              batch_size=args.batch_size,
-                              shuffle=True,
-                              num_workers=args.num_workers,
-                              pin_memory=True,
-                              drop_last=True)
+    if args.dataset == 'cifar100':
+        train_set = cifar100Imbanlance.Cifar100Imbanlance(transform=util.TwoCropTransform(transform_train),
+                                                          imbanlance_rate=args.imbanlance_rate, train=True,
+                                                          file_path=os.path.join(args.data_root, 'cifar-100-python/'))
+        test_set = cifar100Imbanlance.Cifar100Imbanlance(imbanlance_rate=args.imbanlance_rate, train=False,
+                                                         transform=transform_val,
+                                                         file_path=os.path.join(args.data_root, 'cifar-100-python/'))
+        print("load cifar100")
+
+    train_sampler = None
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size,
+                                               shuffle=True, num_workers=args.workers,
+                                               persistent_workers=True, pin_memory=True, sampler=train_sampler)
+    val_loader = torch.utils.data.DataLoader(test_set, batch_size=args.batch_size, shuffle=False,
+                                             num_workers=args.workers, persistent_workers=True, pin_memory=True,
+                                             drop_last=True)
 
     model = SimSiam(args)
 
@@ -103,7 +127,7 @@ def main():
     # routine
     best_acc = 0.0
     validation = KNNValidation(args, model.encoder)
-    for epoch in range(start_epoch, args.epochs+1):
+    for epoch in range(start_epoch, args.epochs + 1):
 
         adjust_learning_rate(optimizer, epoch, args)
         print("Training...")
@@ -190,6 +214,7 @@ def adjust_learning_rate(optimizer, epoch, args):
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self, name, fmt=':f'):
         self.name = name
         self.fmt = fmt
@@ -256,6 +281,3 @@ def load_checkpoint(model, optimizer, filename):
 
 if __name__ == '__main__':
     main()
-
-
-
